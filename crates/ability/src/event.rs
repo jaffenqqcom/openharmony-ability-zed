@@ -51,6 +51,9 @@ pub enum Event<'a> {
     /// window stage unfocus event
     /// alias WindowStageEventType.INAVTIVE
     LostFocus,
+    /// window visibility change
+    /// alias window.on("windowVisibilityChange")
+    VisibilityChanged(bool),
     /// window resume
     /// alias WindowStageEventType.RESUMED
     Resume(SaveLoader<'a>),
@@ -107,6 +110,7 @@ impl<'a> Event<'a> {
             Event::Start => "Start",
             Event::GainedFocus => "GainedFocus",
             Event::LostFocus => "LostFocus",
+            Event::VisibilityChanged(_) => "VisibilityChanged",
             Event::Resume(_) => "Resume",
             Event::Pause => "Pause",
             Event::Stop => "Stop",

@@ -20,7 +20,12 @@ impl OpenHarmonyWaker {
     }
 
     pub fn wake(&self) {
-        if let Some(waker) = &self.waker {
+        // Read the TSFN live from the global WAKER on each wake, instead of using a snapshot taken at creation.
+        // Reason: set_ohos_app -> create_waker runs before the ArkTS-side init -> create_lifecycle_handle
+        // (which writes the global WAKER). With a snapshot, wake would always get None, UserEvent would never
+        // be delivered, the foreground executor would not be driven, and the GPUI window creation task would never run (black screen).
+        let guard = (*WAKER).read().expect("Failed to read WAKER");
+        if let Some(waker) = guard.as_ref() {
             waker.call(Ok(()), ThreadsafeFunctionCallMode::NonBlocking);
         }
     }

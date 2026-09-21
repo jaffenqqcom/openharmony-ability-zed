@@ -1,7 +1,10 @@
 mod app;
 mod area;
 mod bridge;
+mod child_process;
+mod clipboard;
 mod configuration;
+mod file_uri;
 mod draw;
 mod error;
 mod event;
@@ -11,13 +14,17 @@ mod memory;
 mod node;
 mod render;
 mod stage;
+mod timer;
 mod waker;
 
 pub use app::*;
 pub use area::*;
 pub use bridge::*;
+pub use child_process::*;
+pub use clipboard::*;
 pub use configuration::*;
 pub use draw::*;
+pub use file_uri::*;
 pub use error::*;
 pub use event::*;
 pub use input::*;
@@ -26,6 +33,7 @@ pub use memory::*;
 pub use node::*;
 pub use render::*;
 pub use stage::*;
+pub use timer::*;
 pub use waker::*;
 
 /// Re-exported for [`impl_bridge_napi_type!`](crate::impl_bridge_napi_type) expansions in

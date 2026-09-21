@@ -31,13 +31,22 @@ export interface WindowStageEventCallback {
   onWindowSizeChange: (arg: object) => void;
   onWindowRectChange: (arg: object) => void;
   onAvoidAreaChange: (arg: object) => void;
+  onWindowVisibilityChange: (visible: boolean) => void;
 }
 
 export interface AbilityInitContext {
   basePath?: string;
   prefPath?: string;
   preferredLocales?: string;
+  /**
+   * OHOS `Configuration.colorMode` captured at Ability init: -1 not set, 0 dark, 1 light.
+   * The system reports the value only on configuration updates, so the startup reading must
+   * be handed over here to keep the first rendered appearance in sync with the system.
+   */
+  colorMode?: number;
   moduleName?: string;
+  /** Resolved home directory (`<picked root>/HiCodeer`); empty when unset. */
+  homeDirectory?: string;
   resourceManager?: resourceManager.ResourceManager;
 }
 

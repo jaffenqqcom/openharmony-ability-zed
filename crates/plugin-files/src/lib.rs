@@ -114,11 +114,8 @@ impl FileDialogOptions {
                 )));
             }
         }
-        if self.dialog_type == dialog_type::OPEN_FOLDER && self.allow_many {
-            return Err(Error::from_reason(
-                "open-folder dialog does not support allow_many",
-            ));
-        }
+        // Note: open-folder does support allow_many. The OHOS picker selects multiple
+        // folders via maxSelectNumber on API 23+ (allowsMulFolderSelection on API 26+).
         for filter in &self.filters {
             if let Some(pattern) = filter.pattern.as_ref() {
                 if pattern.trim().is_empty() {
@@ -166,7 +163,10 @@ impl FilesExt for OpenHarmonyApp {
                 .call_async::<FilesBridgePlugin, FileDialogOptions, FileDialogResponse>(
                     "file-dialog",
                     options,
-                    BridgeCallOptions::default().with_timeout_ms(60_000),
+                    // File dialogs are user-driven and may stay open while the
+                    // user decides; 0 disables the bridge timeout so a later
+                    // selection or an explicit cancel still reaches the caller.
+                    BridgeCallOptions::default().with_timeout_ms(0),
                 )
                 .await
         })
@@ -207,7 +207,7 @@ mod tests {
         assert!(bad_kind.validate().is_err());
 
         let folder_many = FileDialogOptions::new(dialog_type::OPEN_FOLDER).allow_many(true);
-        assert!(folder_many.validate().is_err());
+        assert!(folder_many.validate().is_ok());
     }
 
     #[test]

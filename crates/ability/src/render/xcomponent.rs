@@ -1,10 +1,10 @@
-use napi_ohos::threadsafe_function::ThreadsafeFunctionCallMode::NonBlocking;
 use napi_ohos::{Env, Error, Result};
 use ohos_arkui_binding::component::attribute::ArkUICommonAttribute;
 use ohos_arkui_binding::{ArkUIHandle, RootNode, XComponent};
-use ohos_ime_binding::IME;
+use ohos_arkui_input_binding::{ArkUIInputEvent, UIInputEvent};
+use ohos_xcomponent_binding::TouchPointTool;
 
-use crate::{input, Event, InputEvent, IntervalInfo, OpenHarmonyApp, Rect, Size};
+use crate::{input, Event, InputEvent, OpenHarmonyApp, Rect, Size};
 
 /// create lifecycle object and return to arkts
 pub fn render(
@@ -19,6 +19,15 @@ pub fn render(
     xcomponent_native
         .background_color(0x0000_0000)
         .map_err(|e| Error::from_reason(e.reason.to_string()))?;
+    // XComponent must be focusable and hold the default focus, otherwise the system routes
+    // key events to the ArkTS layer focus node (Row/secure_field in DefaultXComponent) and
+    // the NDK on_key_event callback is never fired.
+    xcomponent_native
+        .set_focusable(true)
+        .map_err(|e| Error::from_reason(e.reason.to_string()))?;
+    xcomponent_native
+        .set_default_focus(true)
+        .map_err(|e| Error::from_reason(e.reason.to_string()))?;
 
     let xcomponent = xcomponent_native.native_xcomponent();
 
@@ -26,15 +35,6 @@ pub fn render(
 
     let on_surface_created_app = app.clone();
     let on_surface_created_owner = render_owner.clone();
-    let insert_text_app = app.clone();
-    let redraw_app = app.clone();
-
-    let (
-        insert_text_callback_tsfn,
-        on_ime_hide_callback_tsfn,
-        on_backspace_callback_tsfn,
-        on_ime_enter_callback_tsfn,
-    ) = input::ime_ts_fn(env, app.clone(), render_owner.clone())?;
 
     xcomponent.on_surface_created(move |xc_raw, win| {
         let size = xc_raw.size(win).unwrap();
@@ -53,46 +53,10 @@ pub fn render(
             return Ok(());
         }
 
-        // We need to create IME instance when app is focused.
-        let ime = IME::new(Default::default());
-        *on_surface_created_app.ime.borrow_mut() = Some(ime);
-
-        if let Some(b_ime) = insert_text_app.ime.borrow().as_ref() {
-            // // run in other thread
-            b_ime.insert_text(|s| {
-                insert_text_callback_tsfn.call(s, NonBlocking);
-            });
-            b_ime.on_status_change(|s| {
-                on_ime_hide_callback_tsfn.call(s.into(), NonBlocking);
-            });
-            b_ime.on_backspace(|len| {
-                on_backspace_callback_tsfn.call(len, NonBlocking);
-            });
-            b_ime.on_enter(|key| {
-                on_ime_enter_callback_tsfn.call(key as i32, NonBlocking);
-            });
+        if let Some(ref mut h) = *on_surface_created_app.event_loop.borrow_mut() {
+            h(Event::SurfaceCreate)
         }
 
-        {
-            if let Some(ref mut h) = *on_surface_created_app.event_loop.borrow_mut() {
-                h(Event::SurfaceCreate)
-            }
-        }
-
-        let inner_redraw_app = redraw_app.clone();
-        let inner_redraw_owner = on_surface_created_owner.clone();
-        xc.on_frame_callback(move |_xcomponent, _time, _time_stamp| {
-            if !inner_redraw_app.is_render_surface_active(&inner_redraw_owner) {
-                return Ok(());
-            }
-            if let Some(ref mut h) = *inner_redraw_app.event_loop.borrow_mut() {
-                h(Event::WindowRedraw(IntervalInfo {
-                    time_stamp: _time_stamp as _,
-                    target_time_stamp: _time as _,
-                }))
-            }
-            Ok(())
-        })?;
         Ok(())
     });
 
@@ -135,8 +99,17 @@ pub fn render(
         if !on_touch_event_app.is_render_surface_active(&on_touch_event_owner) {
             return Ok(());
         }
-        if let Some(ref mut h) = *on_touch_event_app.event_loop.borrow_mut() {
-            h(Event::Input(InputEvent::TouchEvent(data)))
+        // Only touchscreen (Finger) touches are kept here; mouse and touchpad
+        // input arrive through their own NDK/UIInputEvent callbacks.
+        let tool_type = data
+            .touch_points
+            .first()
+            .map(|point| point.event_tool_type)
+            .unwrap_or(TouchPointTool::Unknown);
+        if tool_type == TouchPointTool::Finger {
+            if let Some(ref mut h) = *on_touch_event_app.event_loop.borrow_mut() {
+                h(Event::Input(InputEvent::TouchEvent(data)));
+            }
         }
         Ok(())
     });
@@ -164,7 +137,38 @@ pub fn render(
         }
         Ok(())
     })?;
+
+    // Pointer enter/leave of the XComponent window. Mirrors the X11 EnterNotify/LeaveNotify
+    // handling in gpui_linux: only the enter/leave transition drives the GPUI hovered state.
+    let on_hover_event_app = app.clone();
+    let on_hover_event_owner = render_owner.clone();
+    xcomponent.on_hover_event(move |_, is_hover| {
+        if !on_hover_event_app.is_render_surface_active(&on_hover_event_owner) {
+            return Ok(());
+        }
+        if let Some(ref mut h) = *on_hover_event_app.event_loop.borrow_mut() {
+            h(Event::Input(InputEvent::HoverEvent(is_hover)));
+        }
+        Ok(())
+    })?;
     xcomponent.register_mouse_event_callback()?;
+
+    // Scroll input arrives through the UIInputEvent channel.
+    // OH_NativeXComponent_RegisterUIInputEventCallback supports Axis events only.
+    let on_ui_input_event_app = app.clone();
+    let on_ui_input_event_owner = render_owner.clone();
+    let ui_input_callback = move |_, event: ArkUIInputEvent| {
+        if !on_ui_input_event_app.is_render_surface_active(&on_ui_input_event_owner) {
+            return Ok(());
+        }
+        if let Some(input_event) = input::ui_input_event_to_input_event(&event) {
+            if let Some(ref mut h) = *on_ui_input_event_app.event_loop.borrow_mut() {
+                h(Event::Input(input_event));
+            }
+        }
+        Ok(())
+    };
+    xcomponent.on_ui_input_event(UIInputEvent::Axis, ui_input_callback)?;
 
     xcomponent.register_callback()?;
 

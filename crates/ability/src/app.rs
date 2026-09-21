@@ -12,13 +12,12 @@ use napi_derive_ohos::napi;
 use napi_ohos::{bindgen_prelude::Object, Env, Error, Result};
 use ohos_arkui_binding::XComponent;
 use ohos_display_binding::default_display_scaled_density;
-use ohos_ime_binding::IME;
 use ohos_xcomponent_binding::RawWindow;
 
 use crate::{
     bridge::MainThreadBridgeEndpoint, AvoidArea, AvoidAreaType, BridgeMainThread,
     BridgeMainThreadEvent, BridgePlugin, BridgePluginDeclaration, BridgePluginRegistry,
-    BridgeRuntime, Configuration, Event, MainThreadScheduler, OpenHarmonyWaker,
+    BridgeRuntime, Configuration, Event, InputEvent, MainThreadScheduler, OpenHarmonyWaker,
     PluginLifecycleEvent, Rect, WAKER,
 };
 
@@ -32,7 +31,12 @@ pub struct AbilityInitContext {
     pub base_path: Option<String>,
     pub pref_path: Option<String>,
     pub preferred_locales: Option<String>,
+    /// OHOS `Configuration.colorMode` at init time: -1 not set, 0 dark, 1 light.
+    pub color_mode: Option<i32>,
     pub module_name: Option<String>,
+    /// Home directory (`<picked root>/HiCodeer`) resolved by the ets side before
+    /// the native module loaded. Empty/absent means no directory was chosen.
+    pub home_directory: Option<String>,
 }
 
 impl AbilityInitContext {
@@ -45,9 +49,51 @@ impl AbilityInitContext {
             base_path: context.get("basePath")?,
             pref_path: context.get("prefPath")?,
             preferred_locales: context.get("preferredLocales")?,
+            color_mode: context.get("colorMode")?,
             module_name: context.get("moduleName")?,
+            home_directory: context.get("homeDirectory")?,
         })
     }
+}
+
+/// Native AbilityRuntime application-context binding.
+#[link(name = "ability_runtime")]
+unsafe extern "C" {
+    /// Returns the install-time extracted resfile directory for the given
+    /// module (libability_runtime.so, API 20+). This is the same directory
+    /// that ArkTS exposes as `context.resourceDir`, fetched without going
+    /// through ArkTS.
+    fn OH_AbilityRuntime_ApplicationContextGetResourceDir(
+        module_name: *const std::ffi::c_char,
+        buffer: *mut std::ffi::c_char,
+        buffer_size: i32,
+        write_length: *mut i32,
+    ) -> i32;
+}
+
+/// Returns the resfile directory of the given module through the native
+/// application-context API. The packaged cmd-agentd binary lives there
+/// as a plain read-only file, readable by any process with this app's uid.
+pub fn application_resource_dir(module_name: &str) -> Result<String> {
+    let module_name_c = std::ffi::CString::new(module_name)
+        .map_err(|_| Error::from_reason("module_name contains a NUL byte"))?;
+    let mut buffer = vec![0u8; 1024];
+    let mut write_length: i32 = 0;
+    // ABILITY_RUNTIME_ERROR_CODE_NO_ERROR == 0.
+    let code = unsafe {
+        OH_AbilityRuntime_ApplicationContextGetResourceDir(
+            module_name_c.as_ptr(),
+            buffer.as_mut_ptr() as *mut std::ffi::c_char,
+            buffer.len() as i32,
+            &mut write_length,
+        )
+    };
+    if code != 0 || write_length <= 0 {
+        return Err(Error::from_reason(format!(
+            "application_resource_dir({module_name}) failed with code {code}"
+        )));
+    }
+    Ok(String::from_utf8_lossy(&buffer[..write_length as usize]).into_owned())
 }
 
 #[derive(Clone)]
@@ -143,6 +189,10 @@ impl OpenHarmonyAppInner {
 
     pub fn create_waker(&self) -> OpenHarmonyWaker {
         let guard = (*WAKER).read().expect("Failed to read WAKER");
+        log::info!(
+            "[boot] create_waker: WAKER is {}",
+            if guard.is_some() { "SET" } else { "NONE" }
+        );
         OpenHarmonyWaker::new((*guard).clone())
     }
 
@@ -246,6 +296,17 @@ impl OpenHarmonyAppInner {
     }
 
     pub fn set_init_context(&mut self, context: AbilityInitContext) {
+        // The Ability reports `Configuration.colorMode` only when the configuration updates,
+        // never at startup. Seed it from the init context so the first window already knows the
+        // system appearance instead of staying light until the first configuration update.
+        if let Some(color_mode) = context.color_mode.map(crate::ColorMode::from) {
+            if matches!(color_mode, crate::ColorMode::NoSet) {
+                log::warn!(
+                    "set_init_context: colorMode not set; system appearance unknown, falling back to light"
+                );
+            }
+            self.configuration.color_mode = color_mode;
+        }
         self.init_context = context;
     }
 }
@@ -266,10 +327,26 @@ pub struct OpenHarmonyApp {
     pub(crate) inner: Arc<RwLock<OpenHarmonyAppInner>>,
     pub(crate) event_loop: EventLoop,
     pub(crate) back_press_interceptor: BackPressInterceptor,
-    pub(crate) ime: Arc<RefCell<Option<IME>>>,
     bridge_session: Arc<RwLock<Option<ActiveBridgeSession>>>,
     bridge_plugins: Arc<BridgePluginRegistry>,
     is_keyboard_show: Arc<Mutex<bool>>,
+}
+
+thread_local! {
+    /// The process-wide OpenHarmonyApp, set once by the host on the main thread.
+    static GLOBAL_APP: RefCell<Option<OpenHarmonyApp>> = const { RefCell::new(None) };
+}
+
+/// Stores the OpenHarmonyApp on the main thread so the platform can pick it up
+/// when it is constructed, mirroring how MacPlatform/Linux platforms own their
+/// native objects from creation (no separate injection channel through gpui).
+pub fn set_global_app(app: OpenHarmonyApp) {
+    GLOBAL_APP.with(|slot| *slot.borrow_mut() = Some(app));
+}
+
+/// Returns the OpenHarmonyApp set on the current thread, if any.
+pub fn global_app() -> Option<OpenHarmonyApp> {
+    GLOBAL_APP.with(|slot| slot.borrow().clone())
 }
 
 impl Debug for OpenHarmonyApp {
@@ -317,11 +394,22 @@ impl OpenHarmonyApp {
             event_loop: Arc::new(RefCell::new(None)),
             #[allow(clippy::arc_with_non_send_sync)]
             back_press_interceptor: Arc::new(RefCell::new(None)),
-            #[allow(clippy::arc_with_non_send_sync)]
-            ime: Arc::new(RefCell::new(None)),
             bridge_session: Arc::new(RwLock::new(None)),
             bridge_plugins: Arc::new(BridgePluginRegistry::default()),
             is_keyboard_show: Arc::new(Mutex::new(false)),
+        }
+    }
+
+    /// Pushes an IME input event into the registered event-loop handler.
+    ///
+    /// Called by the IME bridge plugin on the main thread when an ArkTS
+    /// `InputMethodController` callback arrives; this keeps the same
+    /// `Event::Input(InputEvent::ImeEvent(..))` stream the previous NDK path
+    /// produced, so the GPUI consumer (`OhosWindow::handle_input_event`) is
+    /// unchanged.
+    pub fn dispatch_input_event(&self, event: InputEvent) {
+        if let Some(ref mut handler) = *self.event_loop.borrow_mut() {
+            handler(Event::Input(event));
         }
     }
 
@@ -355,6 +443,11 @@ impl OpenHarmonyApp {
 
     pub fn base_path(&self) -> Option<String> {
         self.init_context().base_path
+    }
+
+    /// The home directory the ets side resolved before the native module loaded.
+    pub fn home_directory(&self) -> Option<String> {
+        self.init_context().home_directory
     }
 
     pub fn pref_path(&self) -> Option<String> {
@@ -411,15 +504,65 @@ impl OpenHarmonyApp {
             .unwrap_or(false)
     }
 
+    /// Registers the XComponent on-frame callback so a WindowRedraw is emitted
+    /// on each vsync while the platform has an active frame request.
+    /// Idempotent: a no-op when the callback is already registered. No-op when
+    /// the render surface is not active (window hidden/minimized).
+    pub fn enable_frame_callback(&self) {
+        if crate::lifecycle::is_frame_callback_enabled() {
+            return;
+        }
+        let inner = self.inner.read().unwrap();
+        let Some(owner) = inner.render_owner.clone() else { return };
+        let Some(xc) = inner.xcomponent.as_ref() else { return };
+        let app = self.clone();
+        if let Err(e) = xc.native_xcomponent().on_frame_callback(move |_component, time, ts| {
+            // On-demand frame callback: only emit WindowRedraw while the
+            // platform has an active frame request; idle windows skip emitting.
+            if !crate::lifecycle::is_frame_callback_enabled() {
+                return Ok(());
+            }
+            if !app.is_render_surface_active(&owner) {
+                return Ok(());
+            }
+            if let Some(ref mut h) = *app.event_loop.borrow_mut() {
+                h(crate::Event::WindowRedraw(crate::IntervalInfo {
+                    time_stamp: ts as _,
+                    target_time_stamp: time as _,
+                }))
+            }
+            Ok(())
+        }) {
+            log::warn!("enable_frame_callback on_frame_callback failed: {e}");
+            return;
+        }
+        crate::lifecycle::set_frame_callback_enabled(true);
+    }
+
+    /// Unregisters the XComponent on-frame callback, stopping per-vsync
+    /// callbacks entirely so an idle window no longer wakes the main thread.
+    /// Idempotent: a no-op when the callback is already unregistered, so
+    /// repeated lost-focus / visibility events never hit the DisplaySync
+    /// DelFromPipeline path with a null context.
+    pub fn disable_frame_callback(&self) {
+        if !crate::lifecycle::is_frame_callback_enabled() {
+            return;
+        }
+        let inner = self.inner.read().unwrap();
+        if let Some(xc) = inner.xcomponent.as_ref() {
+            if let Err(e) = xc.native_xcomponent().off_frame_callback() {
+                log::warn!("disable_frame_callback off_frame_callback failed: {e}");
+            }
+        }
+        crate::lifecycle::set_frame_callback_enabled(false);
+    }
+
     pub(crate) fn deactivate_render_surface(&self, owner: &str) -> bool {
         let deactivated = self
             .inner
             .write()
             .map(|mut inner| inner.deactivate_surface(owner))
             .unwrap_or(false);
-        if deactivated {
-            self.ime.borrow_mut().take();
-        }
         deactivated
     }
 
@@ -435,7 +578,6 @@ impl OpenHarmonyApp {
         let Some(surface_was_active) = surface_was_active else {
             return;
         };
-        self.ime.borrow_mut().take();
         if surface_was_active {
             self.dispatch_surface_destroy();
         }
@@ -582,24 +724,6 @@ impl OpenHarmonyApp {
         }
     }
 
-    pub fn show_keyboard(&self) {
-        let _guard = self
-            .is_keyboard_show
-            .lock()
-            .expect("Failed to lock is_keyboard_show");
-        if let Some(ime) = self.ime.borrow().as_ref() {
-            ime.show_keyboard();
-        }
-    }
-    pub fn hide_keyboard(&self) {
-        let _guard = self
-            .is_keyboard_show
-            .lock()
-            .expect("Failed to lock is_keyboard_show");
-        if let Some(ime) = self.ime.borrow().as_ref() {
-            ime.hide_keyboard();
-        }
-    }
     pub fn create_waker(&self) -> OpenHarmonyWaker {
         self.inner.read().unwrap().create_waker()
     }

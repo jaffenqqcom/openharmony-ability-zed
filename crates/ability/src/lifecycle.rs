@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use napi_derive_ohos::napi;
@@ -10,6 +11,34 @@ use crate::{
     AvoidArea, AvoidAreaInfo, AvoidAreaType, BridgePluginDeclaration, ContentRect, Event,
     OpenHarmonyApp, PluginLifecycleEvent, Rect, SaveLoader, SaveSaver, Size, StageEventType, WAKER,
 };
+
+/// Window visibility reported by the ArkTS `windowVisibilityChange` event.
+/// `true` while the window is displayed; `false` once hidden (minimized or
+/// backgrounded). Drives on-demand vsync: while hidden, frame callbacks are
+/// never armed so rendering is fully suspended.
+static WINDOW_VISIBLE: AtomicBool = AtomicBool::new(true);
+
+/// Whether the XComponent frame callback may emit WindowRedraw events. Only
+/// true while the platform has a pending frame request (the GPUI side wants
+/// to render); cleared after a frame is consumed with no follow-up demand, so
+/// idle windows stop generating redraw events entirely.
+static FRAME_CALLBACK_ENABLED: AtomicBool = AtomicBool::new(false);
+
+pub(crate) fn set_window_visibility(visible: bool) {
+    WINDOW_VISIBLE.store(visible, Ordering::Release);
+}
+
+pub fn window_visibility() -> bool {
+    WINDOW_VISIBLE.load(Ordering::Acquire)
+}
+
+pub(crate) fn set_frame_callback_enabled(enabled: bool) {
+    FRAME_CALLBACK_ENABLED.store(enabled, Ordering::Release);
+}
+
+pub(crate) fn is_frame_callback_enabled() -> bool {
+    FRAME_CALLBACK_ENABLED.load(Ordering::Acquire)
+}
 
 #[napi(object)]
 pub struct EnvironmentCallback<'a> {
@@ -29,6 +58,7 @@ pub struct WindowStageEventCallback<'a> {
     pub on_window_size_change: Function<'a, Object<'a>, ()>,
     pub on_window_rect_change: Function<'a, Object<'a>, ()>,
     pub on_avoid_area_change: Function<'a, Object<'a>, ()>,
+    pub on_window_visibility_change: Function<'a, bool, ()>,
 }
 
 #[napi(object)]
@@ -83,6 +113,7 @@ pub fn create_lifecycle_handle<'a>(
             .map_err(|_| napi_ohos::Error::from_reason("Failed to write WAKER"))?;
 
         guard.replace(Arc::new(tsfn));
+        log::info!("[boot] create_lifecycle_handle: WAKER set");
     }
 
     let on_memory_level_app = app.clone();
@@ -304,6 +335,26 @@ pub fn create_lifecycle_handle<'a>(
             Ok(())
         })?;
 
+    // Window visibility (Window.on('windowVisibilityChange')): titlebar
+    // minimize/hide on 2in1 does NOT fire windowStageEvent (no Stop/LostFocus),
+    // only this visibility callback. Store the value globally so the platform
+    // layer can gate on-demand vsync on whether the window is actually visible.
+    let window_visibility_changed_app = app.clone();
+    let window_visibility_changed =
+        env.create_function_from_closure("window_visibility_changed", move |ctx| {
+            let visible = ctx.first_arg::<bool>()?;
+            set_window_visibility(visible);
+            // Emit a dedicated visibility event instead of routing it through
+            // focus events: the frame callback start/stop lives in the window
+            // layer on VisibilityChanged, so focus events stay real focus only
+            // (StageEventType::Active/Inactive) and never double-unregister the
+            // DisplaySync pipeline on minimize.
+            if let Some(ref mut h) = *window_visibility_changed_app.event_loop.borrow_mut() {
+                h(crate::Event::VisibilityChanged(visible))
+            }
+            Ok(())
+        })?;
+
     Ok(ApplicationLifecycle {
         bridge_plugins,
         environment_callback: EnvironmentCallback {
@@ -321,6 +372,7 @@ pub fn create_lifecycle_handle<'a>(
             on_window_size_change: window_resize,
             on_avoid_area_change: avoid_area_change,
             on_window_stage_event: window_stage_event,
+            on_window_visibility_change: window_visibility_changed,
         },
         keyboard_event_callback: KeyboardCallback {
             on_keyboard_height_change: keyboard_event_callback,

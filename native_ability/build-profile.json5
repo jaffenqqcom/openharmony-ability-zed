@@ -2,10 +2,8 @@
   "apiType": "stageMode",
   "buildOption": {
     "externalNativeOptions": {
-      "path": "./src/main/cpp/CMakeLists.txt",
-      "arguments": "",
-      "cppFlags": "",
-    },
+      "path": "./src/main/cpp/CMakeLists.txt"
+    }
   },
   "buildOptionSet": [
     {
@@ -14,25 +12,39 @@
         "obfuscation": {
           "ruleOptions": {
             "enable": false,
-            "files": ["./obfuscation-rules.txt"],
+            "files": [
+              "./obfuscation-rules.txt"
+            ]
           },
-          "consumerFiles": ["./consumer-rules.txt"],
-        },
+          "consumerFiles": [
+            "./consumer-rules.txt"
+          ]
+        }
       },
       "nativeLib": {
         "debugSymbol": {
-          "strip": true,
-          "exclude": [],
-        },
-      },
-    },
+          "strip": true
+        }
+      }
+    }
   ],
   "targets": [
     {
       "name": "default",
+      "config": {
+        "buildOption": {
+          "arkOptions": {
+            "obfuscation": {
+              "ruleOptions": {
+                "enable": false
+              }
+            }
+          }
+        }
+      }
     },
     {
-      "name": "ohosTest",
-    },
-  ],
+      "name": "ohosTest"
+    }
+  ]
 }

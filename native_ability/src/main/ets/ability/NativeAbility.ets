@@ -47,7 +47,17 @@ export class NativeAbility extends UIAbility {
   private abilityGeneration: number = 0;
   private windowStageGeneration: number = 0;
   private windowStageActive: boolean = false;
+  /**
+   * When non-null, `initializeSession` waits for `releaseNativeLoad()` before it loads a native
+   * module. Subclasses that must show UI before libhicodeer loads call `holdNativeLoad()` from
+   * their `onCreate`. Default null: no behavior change for hosts that do not opt in.
+   */
+  private nativeLoadGate: Promise<void> | null = null;
+  private nativeLoadRelease: (() => void) | null = null;
+  /** Resolved home directory (`<picked root>/HiCodeer`) for this session, passed to Rust. */
+  protected homeDirectory: string = "";
   private observedWindowStage?: window.WindowStage;
+  private observedWindow?: window.Window;
 
   private readonly onWindowStageEvent = (event: window.WindowStageEventType): void => {
     if (!this.acceptingLifecycle || this.observedWindowStage === undefined) {
@@ -62,6 +72,15 @@ export class NativeAbility extends UIAbility {
         payload: new BridgeWindowStageEventLifecyclePayload(event),
       });
     });
+  };
+
+  private readonly onWindowVisibilityChange = (visible: boolean): void => {
+    if (!this.acceptingLifecycle) {
+      return;
+    }
+    this.forEachLifecycle((lifecycle) =>
+      lifecycle.windowStageEventCallback.onWindowVisibilityChange(visible),
+    );
   };
 
   protected resolveModuleNames(): string[] {
@@ -93,6 +112,24 @@ export class NativeAbility extends UIAbility {
     return this.lifecycleQueue.settled();
   }
 
+  /** Delays the native module load until `releaseNativeLoad()`. Idempotent. */
+  protected holdNativeLoad(): void {
+    if (this.nativeLoadGate === null) {
+      this.nativeLoadGate = new Promise<void>((resolve: () => void): void => {
+        this.nativeLoadRelease = resolve;
+      });
+    }
+  }
+
+  /** Releases a pending `holdNativeLoad()`. Idempotent. */
+  protected releaseNativeLoad(): void {
+    const release = this.nativeLoadRelease;
+    this.nativeLoadRelease = null;
+    if (release !== null) {
+      release();
+    }
+  }
+
   protected parseSavedStateMap(rawState: string): Record<string, string> {
     return AbilityStateCodec.decode(rawState);
   }
@@ -107,7 +144,9 @@ export class NativeAbility extends UIAbility {
       basePath: context?.filesDir ?? "",
       prefPath: context?.filesDir ?? "",
       preferredLocales: context?.config?.language ?? "",
+      colorMode: context?.config?.colorMode ?? -1,
       moduleName,
+      homeDirectory: this.homeDirectory,
       resourceManager: context?.resourceManager,
     };
   }
@@ -385,6 +424,10 @@ export class NativeAbility extends UIAbility {
     this.updateAppStorage("moduleName", this.moduleName);
     this.updateAppStorage("loadMode", this.loadMode);
     void this.enqueueLifecycleOperation("ability-create", async (): Promise<void> => {
+      const gate = this.nativeLoadGate;
+      if (gate !== null) {
+        await gate;
+      }
       await this.initializeSession(requestedModules, restoredStateMap, state, generation);
     });
   }
@@ -424,6 +467,13 @@ export class NativeAbility extends UIAbility {
       try {
         this.observedWindowStage = windowStage;
         windowStage.on("windowStageEvent", this.onWindowStageEvent);
+        // Window visibility (windowVisibilityChange) is the reliable signal for
+        // titlebar minimize/hide on 2in1, which does not fire windowStageEvent.
+        const win = await windowStage.getMainWindow();
+        if (win !== null && win !== undefined) {
+          win.on("windowVisibilityChange", this.onWindowVisibilityChange);
+          this.observedWindow = win;
+        }
       } catch {}
 
       await this.loadWindowStageContent(windowStage);
@@ -478,10 +528,17 @@ export class NativeAbility extends UIAbility {
 
   private detachWindowListeners(): void {
     const windowStage = this.observedWindowStage;
+    const win = this.observedWindow;
     this.observedWindowStage = undefined;
+    this.observedWindow = undefined;
     if (windowStage !== undefined) {
       try {
         windowStage.off("windowStageEvent", this.onWindowStageEvent);
+      } catch {}
+    }
+    if (win !== undefined) {
+      try {
+        win.off("windowVisibilityChange", this.onWindowVisibilityChange);
       } catch {}
     }
   }

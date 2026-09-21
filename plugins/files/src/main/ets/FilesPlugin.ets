@@ -29,6 +29,12 @@ interface DocumentViewPickerWithSelectedIndex {
   getSelectedIndex(): number;
 }
 
+// API 26+ only: allowsMulFolderSelection is absent on older SDKs, so access it through
+// a narrow interface to keep the package compatible with compatibleSdkVersion = 23.
+interface DocumentSelectOptionsWithMulFolder {
+  allowsMulFolderSelection: boolean;
+}
+
 class FileDialogResponse {
   readonly files: string[];
   readonly filter: number;
@@ -50,9 +56,6 @@ function parseDialogOptions(payload: BridgeTypedValue): FileDialogOptions {
     request.dialogType !== "open-folder"
   ) {
     throw new Error(`file-dialog.dialogType '${request.dialogType}' is unsupported`);
-  }
-  if (request.dialogType === "open-folder" && request.allowMany === true) {
-    throw new Error("open-folder dialog does not support allowMany");
   }
   if (typeof request.filters !== "object") {
     throw new Error("file-dialog.filters must be an array");
@@ -94,7 +97,9 @@ function pickerLocation(location: string | undefined | null): string | undefined
 }
 
 function supportsFolderSelection(): boolean {
-  return deviceInfo.deviceType === "2in1" && canIUse(FOLDER_SELECTION_SYSCAP);
+  // Folder selection is gated by the FolderSelection system capability (2-in-1 and
+  // tablet devices), not by a specific device type.
+  return canIUse(FOLDER_SELECTION_SYSCAP);
 }
 
 async function showFileDialog(
@@ -125,16 +130,23 @@ async function showFileDialog(
   selectOptions.maxSelectNumber = options.allowMany ? 500 : 1;
   selectOptions.fileSuffixFilters = suffixFilters;
   if (options.dialogType === "open-folder") {
-    if (!supportsFolderSelection()) {
-      throw new Error(
-        "OpenHarmony folder selection requires a 2-in-1 device with FolderSelection capability",
-      );
-    }
+    // Bypass the canIUse capability gate: canIUse() can be more conservative than the actual
+    // select(FOLDER) call, so let the system decide (same approach as warp's PickDirectory).
     selectOptions.selectMode = picker.DocumentSelectMode.FOLDER;
-    selectOptions.maxSelectNumber = 1;
+    selectOptions.maxSelectNumber = options.allowMany ? 500 : 1;
     selectOptions.fileSuffixFilters = undefined;
+    if (deviceInfo.sdkApiVersion >= 26 && options.allowMany) {
+      // API 26+ requires allowsMulFolderSelection for multi-folder selection; on
+      // API 24/25 maxSelectNumber alone is sufficient (directory limit removed since API 23).
+      (selectOptions as DocumentSelectOptionsWithMulFolder).allowsMulFolderSelection = true;
+    }
   }
-  return new FileDialogResponse(await documentPicker.select(selectOptions), -1);
+  try {
+    return new FileDialogResponse(await documentPicker.select(selectOptions), -1);
+  } catch (error) {
+    console.error(`documentPicker.select failed: ${JSON.stringify(error)}`);
+    throw new Error(JSON.stringify(error));
+  }
 }
 
 export class FilesPlugin extends AsyncPluginBase {
