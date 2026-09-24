@@ -79,8 +79,12 @@
       "srcPath": "../plugins/url",
     },
     {
-      "name": "plugin_files",
-      "srcPath": "../plugins/files",
+      "name": "plugin_filepicker",
+      "srcPath": "../plugins/filepicker",
+    },
+    {
+      "name": "plugin_openbysys",
+      "srcPath": "../plugins/openbysys",
     },
   ],
 }

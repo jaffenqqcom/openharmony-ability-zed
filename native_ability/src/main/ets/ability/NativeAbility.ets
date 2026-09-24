@@ -1,4 +1,5 @@
 import { AbilityConstant, Configuration, UIAbility, Want } from "@kit.AbilityKit";
+import { BusinessError } from "@kit.BasicServicesKit";
 import common from "@ohos.app.ability.common";
 import window from "@ohos.window";
 import * as Entry from "../components/MainPage";
@@ -195,6 +196,48 @@ export class NativeAbility extends UIAbility {
   }
 
   /**
+   * Hands the ability host's main-window actions to the native module. The closures read the
+   * observed main window lazily: init runs before `onWindowStageCreate`, so the window does not
+   * exist yet when they are registered.
+   */
+  private attachWindowActions(module: Module): void {
+    if (typeof module.setWindowActions !== "function") {
+      console.warn("[NativeAbility] the native module exports no setWindowActions port");
+      return;
+    }
+    module.setWindowActions!(
+      (): void => {
+        this.minimizeMainWindow();
+      },
+      (): void => {
+        this.restoreMainWindow();
+      },
+    );
+  }
+
+  private minimizeMainWindow(): void {
+    const win = this.observedWindow;
+    if (win === undefined) {
+      console.warn("[NativeAbility] minimize requested before the main window was observed");
+      return;
+    }
+    win.minimize().catch((error: BusinessError): void => {
+      console.error(`[NativeAbility] unable to minimize the main window: ${String(error)}`);
+    });
+  }
+
+  private restoreMainWindow(): void {
+    const win = this.observedWindow;
+    if (win === undefined) {
+      console.warn("[NativeAbility] restore requested before the main window was observed");
+      return;
+    }
+    win.restore().catch((error: BusinessError): void => {
+      console.error(`[NativeAbility] unable to restore the main window: ${String(error)}`);
+    });
+  }
+
+  /**
    * Creates the Ability-session transport for one native module. It deliberately lives here,
    * not in DefaultXComponent: ability-only plugins must work before a render surface appears and
    * must survive a component disappear/reappear cycle within the same Ability.
@@ -352,6 +395,7 @@ export class NativeAbility extends UIAbility {
         BridgeHostRegistry.configurePlugins(sessionId, loaded.moduleName, lifecycle.bridgePlugins);
         BridgeHostRegistry.attachApplicationLifecycle(sessionId, loaded.moduleName, lifecycle);
         this.attachBridgeSinks(sessionId, loaded.moduleName, loaded.module);
+        this.attachWindowActions(loaded.module);
 
         const restoredState = restoredStateMap[loaded.moduleName] ?? fallbackState;
         try {

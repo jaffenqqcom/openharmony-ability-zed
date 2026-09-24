@@ -117,6 +117,11 @@ export interface Module {
     value: ESObject,
   ) => ESObject;
   onBridgeLifecycle?: (kind: string) => void;
+  /**
+   * Hands the native module the ability host's main-window actions. The NDK window manager cannot
+   * minimize or restore a window, so the host supplies its own ArkTS closures instead.
+   */
+  setWindowActions?: (minimize: () => void, showAndFocus: () => void) => void;
 }
 
 export type BridgePluginExecution = "async" | "sync-main-thread";

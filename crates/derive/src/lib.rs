@@ -177,6 +177,17 @@ pub fn ability(attr: TokenStream, item: TokenStream) -> TokenStream {
                 (*APP).dispatch_plugin_lifecycle(event)
             }
 
+            /// Registers the ArkTS main-window actions (minimize / show-and-focus). The NDK window
+            /// manager cannot drive them, so the ability host hands its own closures over.
+            #[napi_derive_ohos::napi]
+            pub fn set_window_actions<'a>(
+                env: &'a napi_ohos::Env,
+                minimize: napi_ohos::bindgen_prelude::Function<'a, (), ()>,
+                show_and_focus: napi_ohos::bindgen_prelude::Function<'a, (), ()>,
+            ) -> napi_ohos::Result<()> {
+                openharmony_ability::set_window_actions(env, minimize, show_and_focus)
+            }
+
             #render
         }
     };

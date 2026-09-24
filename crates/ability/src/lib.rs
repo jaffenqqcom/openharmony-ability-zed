@@ -8,6 +8,7 @@ mod file_uri;
 mod draw;
 mod error;
 mod event;
+mod hotkey;
 mod input;
 mod lifecycle;
 mod memory;
@@ -16,6 +17,7 @@ mod render;
 mod stage;
 mod timer;
 mod waker;
+mod window_control;
 
 pub use app::*;
 pub use area::*;
@@ -27,6 +29,7 @@ pub use draw::*;
 pub use file_uri::*;
 pub use error::*;
 pub use event::*;
+pub use hotkey::*;
 pub use input::*;
 pub use lifecycle::*;
 pub use memory::*;
@@ -35,6 +38,7 @@ pub use render::*;
 pub use stage::*;
 pub use timer::*;
 pub use waker::*;
+pub use window_control::*;
 
 /// Re-exported for [`impl_bridge_napi_type!`](crate::impl_bridge_napi_type) expansions in
 /// application/plugin crates.

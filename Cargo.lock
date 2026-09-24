@@ -58,7 +58,8 @@ dependencies = [
  "openharmony-ability",
  "openharmony-ability-derive",
  "openharmony-ability-plugin-app-control",
- "openharmony-ability-plugin-files",
+ "openharmony-ability-plugin-filepicker",
+ "openharmony-ability-plugin-openbysys",
  "openharmony-ability-plugin-permission",
  "openharmony-ability-plugin-resource",
  "openharmony-ability-plugin-url",
@@ -535,7 +536,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "openharmony-ability-plugin-filedrop"
+name = "openharmony-ability-plugin-filedropin"
 version = "1.0.0-beta.1"
 dependencies = [
  "log",
@@ -545,7 +546,17 @@ dependencies = [
 ]
 
 [[package]]
-name = "openharmony-ability-plugin-files"
+name = "openharmony-ability-plugin-filelaunch"
+version = "1.0.0-beta.1"
+dependencies = [
+ "log",
+ "napi-derive-ohos",
+ "napi-ohos",
+ "openharmony-ability",
+]
+
+[[package]]
+name = "openharmony-ability-plugin-filepicker"
 version = "1.0.0-beta.1"
 dependencies = [
  "napi-derive-ohos",
@@ -564,10 +575,9 @@ dependencies = [
 ]
 
 [[package]]
-name = "openharmony-ability-plugin-openwith"
+name = "openharmony-ability-plugin-openbysys"
 version = "1.0.0-beta.1"
 dependencies = [
- "log",
  "napi-derive-ohos",
  "napi-ohos",
  "openharmony-ability",

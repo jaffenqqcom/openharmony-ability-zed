@@ -20,8 +20,9 @@ use ohos_hilog_binding::hilog_info;
 use openharmony_ability::{Event, InputEvent, NodeExt, OpenHarmonyApp};
 use openharmony_ability_derive::ability;
 use openharmony_ability_plugin_app_control::AppControlBridgePlugin;
-use openharmony_ability_plugin_files::{
-    dialog_type, FileDialogFilter, FileDialogOptions, FilesExt,
+use openharmony_ability_plugin_openbysys::OpenBySysBridgePlugin;
+use openharmony_ability_plugin_filepicker::{
+    dialog_type, FileDialogFilter, FileDialogOptions, FilePickerExt,
 };
 use openharmony_ability_plugin_permission::{PermissionBridgePlugin, PermissionExt};
 use openharmony_ability_plugin_resource::{ResourceBridgePlugin, ResourceExt};
@@ -380,8 +381,11 @@ fn openharmony_app(app: OpenHarmonyApp) {
     if let Err(error) = app.register_plugin(openharmony_ability_plugin_url::UrlBridgePlugin) {
         hilog_info!(format!("failed to register url facade: {error}").as_str());
     }
-    if let Err(error) = app.register_plugin(openharmony_ability_plugin_files::FilesBridgePlugin) {
-        hilog_info!(format!("failed to register files facade: {error}").as_str());
+    if let Err(error) = app.register_plugin(openharmony_ability_plugin_filepicker::FilePickerBridgePlugin) {
+        hilog_info!(format!("failed to register filepicker facade: {error}").as_str());
+    }
+    if let Err(error) = app.register_plugin(OpenBySysBridgePlugin) {
+        hilog_info!(format!("failed to register openbysys facade: {error}").as_str());
     }
     if let Err(error) = app.register_plugin(ResourceBridgePlugin::new()) {
         hilog_info!(format!("failed to register resource facade: {error}").as_str());
@@ -453,7 +457,7 @@ pub async fn demo_open_url() -> Result<()> {
     current_app()?.open_url("https://www.openharmony.cn").await
 }
 
-/// PR #65 capability demo: open-file dialog through `ohos.files`.
+/// PR #65 capability demo: open-file dialog through `ohos.filepicker`.
 #[napi]
 pub async fn demo_file_dialog_open() -> Result<Vec<String>> {
     let options = FileDialogOptions::new(dialog_type::OPEN_FILE)
@@ -466,7 +470,7 @@ pub async fn demo_file_dialog_open() -> Result<Vec<String>> {
     Ok(response.files)
 }
 
-/// PR #65 capability demo: save-file dialog through `ohos.files`.
+/// PR #65 capability demo: save-file dialog through `ohos.filepicker`.
 #[napi]
 pub async fn demo_file_dialog_save() -> Result<Vec<String>> {
     let options = FileDialogOptions::new(dialog_type::SAVE_FILE)

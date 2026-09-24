@@ -1,7 +1,8 @@
 import { LazyPlugin, NativeAbility } from "@ohos-rs/ability";
 import window from "@ohos.window";
 import { AppControlPlugin } from "@ohos-rs/ability-plugin-app-control";
-import { FilesPlugin } from "@ohos-rs/ability-plugin-files";
+import { FilePickerPlugin } from "@ohos-rs/ability-plugin-filepicker";
+import { OpenBySysPlugin } from "@ohos-rs/ability-plugin-openbysys";
 import { PermissionPlugin } from "@ohos-rs/ability-plugin-permission";
 import { ResourcePlugin } from "@ohos-rs/ability-plugin-resource";
 import { UrlPlugin } from "@ohos-rs/ability-plugin-url";
@@ -28,7 +29,8 @@ export default class EntryAbility extends NativeAbility {
   public bridgePlugins = [
     new LazyPlugin(() => new PermissionPlugin()),
     new LazyPlugin(() => new AppControlPlugin()),
-    new LazyPlugin(() => new FilesPlugin()),
+    new LazyPlugin(() => new FilePickerPlugin()),
+    new LazyPlugin(() => new OpenBySysPlugin()),
     new LazyPlugin(() => new ResourcePlugin()),
     new LazyPlugin(() => new WindowPlugin()),
     new LazyPlugin(() => new WebviewPlugin()),

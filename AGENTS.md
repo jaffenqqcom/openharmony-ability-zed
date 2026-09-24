@@ -59,7 +59,8 @@ Rust plugin facades (BridgePlugin) + application business code (run_loop)
 | `crates/plugin-app-control` | `ohos.app-control` — sync main-thread terminate |
 | `crates/plugin-window` | `ohos.window` — async avoid-area and multi-window operations |
 | `crates/plugin-webview` | `ohos.webview` — WebView create, controller, custom protocol, JS proxy, callbacks |
-| `crates/plugin-files` | `ohos.files` — file dialogs (open/save/folder) |
+| `crates/plugin-filepicker` | `ohos.filepicker` — file dialogs (open/save/folder) |
+| `crates/plugin-openbysys` | `ohos.openbysys` — open a local path with the app registered for its type, or reveal it in the system file manager |
 | `crates/plugin-url` | `ohos.url` — `context.openLink` |
 | `crates/plugin-resource` | `ohos.resource` — inbound-only: ArkTS pushes `resourceManager` from Ability-scoped `onInstall`; no outbound actions |
 

@@ -240,10 +240,10 @@ export declare function createComposedDemoWebview(): Promise<void>;
  */
 export declare function createDemoWebview(): Promise<void>;
 
-/** PR #65 capability demo: open-file dialog through `ohos.files`. */
+/** PR #65 capability demo: open-file dialog through `ohos.filepicker`. */
 export declare function demoFileDialogOpen(): Promise<Array<string>>;
 
-/** PR #65 capability demo: save-file dialog through `ohos.files`. */
+/** PR #65 capability demo: save-file dialog through `ohos.filepicker`. */
 export declare function demoFileDialogSave(): Promise<Array<string>>;
 
 /** PR #65 capability demo: open an external URL through `ohos.url`. */
