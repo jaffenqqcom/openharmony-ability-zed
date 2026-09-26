@@ -122,6 +122,11 @@ export interface Module {
    * minimize or restore a window, so the host supplies its own ArkTS closures instead.
    */
   setWindowActions?: (minimize: () => void, showAndFocus: () => void) => void;
+  /**
+   * Hands the native module the ability host's own lifecycle actions. Finishing an ability is
+   * ArkTS-only, so the host supplies its own closure instead.
+   */
+  setAbilityActions?: (terminate: () => void) => void;
 }
 
 export type BridgePluginExecution = "async" | "sync-main-thread";

@@ -188,6 +188,16 @@ pub fn ability(attr: TokenStream, item: TokenStream) -> TokenStream {
                 openharmony_ability::set_window_actions(env, minimize, show_and_focus)
             }
 
+            /// Registers the ArkTS ability actions (currently only terminate). Finishing an
+            /// ability is ArkTS-only, so the ability host hands its own closure over.
+            #[napi_derive_ohos::napi]
+            pub fn set_ability_actions<'a>(
+                env: &'a napi_ohos::Env,
+                terminate: napi_ohos::bindgen_prelude::Function<'a, (), ()>,
+            ) -> napi_ohos::Result<()> {
+                openharmony_ability::set_ability_actions(env, terminate)
+            }
+
             #render
         }
     };

@@ -238,6 +238,27 @@ export class NativeAbility extends UIAbility {
   }
 
   /**
+   * Hands the ability host's own lifecycle actions to the native module. Finishing an ability is
+   * ArkTS-only, so the closure calls back into this host rather than into a platform object.
+   */
+  private attachAbilityActions(module: Module): void {
+    if (typeof module.setAbilityActions !== "function") {
+      console.warn("[NativeAbility] the native module exports no setAbilityActions port");
+      return;
+    }
+    module.setAbilityActions!((): void => {
+      this.terminateAbility();
+    });
+  }
+
+  private terminateAbility(): void {
+    const context = this.context as common.UIAbilityContext;
+    context.terminateSelf().catch((error: BusinessError): void => {
+      console.error(`[NativeAbility] unable to terminate the ability: ${String(error)}`);
+    });
+  }
+
+  /**
    * Creates the Ability-session transport for one native module. It deliberately lives here,
    * not in DefaultXComponent: ability-only plugins must work before a render surface appears and
    * must survive a component disappear/reappear cycle within the same Ability.
@@ -396,6 +417,7 @@ export class NativeAbility extends UIAbility {
         BridgeHostRegistry.attachApplicationLifecycle(sessionId, loaded.moduleName, lifecycle);
         this.attachBridgeSinks(sessionId, loaded.moduleName, loaded.module);
         this.attachWindowActions(loaded.module);
+        this.attachAbilityActions(loaded.module);
 
         const restoredState = restoredStateMap[loaded.moduleName] ?? fallbackState;
         try {

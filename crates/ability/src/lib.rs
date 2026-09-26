@@ -1,3 +1,4 @@
+mod ability_control;
 mod app;
 mod area;
 mod bridge;
@@ -19,6 +20,7 @@ mod timer;
 mod waker;
 mod window_control;
 
+pub use ability_control::*;
 pub use app::*;
 pub use area::*;
 pub use bridge::*;
