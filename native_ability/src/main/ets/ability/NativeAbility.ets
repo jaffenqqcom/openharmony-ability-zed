@@ -1,5 +1,14 @@
-import { AbilityConstant, Configuration, UIAbility, Want } from "@kit.AbilityKit";
+import {
+  AbilityConstant,
+  Configuration,
+  UIAbility,
+  Want,
+  wantAgent,
+  WantAgent,
+} from "@kit.AbilityKit";
 import { BusinessError } from "@kit.BasicServicesKit";
+import { i18n } from "@kit.LocalizationKit";
+import { notificationManager } from "@kit.NotificationKit";
 import common from "@ohos.app.ability.common";
 import window from "@ohos.window";
 import * as Entry from "../components/MainPage";
@@ -18,9 +27,23 @@ import {
   BridgePluginFactory,
   BridgeWindowStageEventLifecyclePayload,
   Module,
+  NativeNotificationAction,
+  NativeNotificationRequest,
+  NativeNotificationResponse,
 } from "./type";
 
 export const STATE_KEY = "ohos.rs.ability.application.state";
+
+/**
+ * Want parameter carrying the tag of the activated notification back into the Ability. The name is
+ * namespaced so it never collides with the launch parameters other senders use.
+ */
+const NOTIFICATION_TAG_PARAMETER: string = "ohos.rs.ability.notification.tag";
+/** Want parameter carrying the id of the pressed notification button; absent for the body. */
+const NOTIFICATION_ACTION_ID_PARAMETER: string = "ohos.rs.ability.notification.actionId";
+
+/** Separator of the POSIX `LANGUAGE` list the preferred languages are handed over as. */
+const LOCALE_LIST_SEPARATOR: string = ":";
 
 interface LoadedNativeModule {
   moduleName: string;
@@ -38,6 +61,16 @@ export class NativeAbility extends UIAbility {
   public loadMode: "async" | "sync" = "async";
   /** Application-provided capability plugins. NativeAbility itself has no concrete plugin imports. */
   public bridgePlugins: BridgePluginFactory[] = [];
+  /** Whether the window is being held awake on behalf of a running agent. */
+  private agentKeepsScreenOn: boolean = false;
+  /** Last notification id handed out; distinct tags never share an id. */
+  private lastNotificationId: number = 0;
+  /** Notification ids keyed by the tag the native module uses. */
+  private notificationIds: Map<string, number> = new Map<string, number>();
+  /** Activations received before the native modules finished initialising. */
+  private pendingNotificationResponses: NativeNotificationResponse[] = [];
+  /** Request code handed to the last notification wantAgent; the system needs it unique. */
+  private lastWantAgentRequestCode: number = 0;
 
   private moduleRuntimes: NativeModuleRuntime[] = [];
   private bridgeSessionId: string = "";
@@ -139,12 +172,64 @@ export class NativeAbility extends UIAbility {
     return AbilityStateCodec.encode(stateMap);
   }
 
+  /**
+   * Reads the system's preferred languages as the POSIX `LANGUAGE` list the native side expects:
+   * BCP 47 tags separated by `:`, most preferred first.
+   *
+   * Every language is expanded into its fallback candidates (see `pushLocaleFallbacks`): the native
+   * side matches each candidate against its own locale table by exact id/alias equality, and a
+   * language that carries a script subtag - OHOS reports `zh-Hans-CN` rather than `zh-CN` - never
+   * equals a table entry on its own. `Configuration.language` stays as the last fallback, since it
+   * still carries the system's current language.
+   */
+  private static resolvePreferredLocales(context: common.UIAbilityContext | undefined): string {
+    const locales: string[] = [];
+    try {
+      for (const language of i18n.System.getPreferredLanguageList()) {
+        NativeAbility.pushLocaleFallbacks(language, locales);
+      }
+    } catch (error) {
+      console.warn(`[NativeAbility] unable to read the preferred language list: ${String(error)}`);
+    }
+    if (locales.length === 0) {
+      try {
+        NativeAbility.pushLocaleFallbacks(i18n.System.getSystemLocale(), locales);
+      } catch (error) {
+        console.warn(`[NativeAbility] unable to read the system locale: ${String(error)}`);
+      }
+    }
+    if (locales.length === 0) {
+      NativeAbility.pushLocaleFallbacks(context?.config?.language ?? "", locales);
+    }
+    return locales.join(LOCALE_LIST_SEPARATOR);
+  }
+
+  /**
+   * Appends `locale` and each of its shorter subtag prefixes, in order, skipping duplicates:
+   * `zh-Hans-CN` becomes `zh-Hans-CN`, `zh-Hans`, `zh`. The native side reads the list as an
+   * ordered preference list and picks the first entry it recognizes, so the more specific
+   * candidates have to come first.
+   */
+  private static pushLocaleFallbacks(locale: string, out: string[]): void {
+    let tag = locale.trim();
+    while (tag.length > 0) {
+      if (!out.includes(tag)) {
+        out.push(tag);
+      }
+      const separator = tag.lastIndexOf("-");
+      if (separator < 0) {
+        break;
+      }
+      tag = tag.substring(0, separator);
+    }
+  }
+
   protected createInitContext(moduleName: string): AbilityInitContext {
     const context = this.context as common.UIAbilityContext;
     return {
       basePath: context?.filesDir ?? "",
       prefPath: context?.filesDir ?? "",
-      preferredLocales: context?.config?.language ?? "",
+      preferredLocales: NativeAbility.resolvePreferredLocales(context),
       colorMode: context?.config?.colorMode ?? -1,
       moduleName,
       homeDirectory: this.homeDirectory,
@@ -255,6 +340,209 @@ export class NativeAbility extends UIAbility {
     const context = this.context as common.UIAbilityContext;
     context.terminateSelf().catch((error: BusinessError): void => {
       console.error(`[NativeAbility] unable to terminate the ability: ${String(error)}`);
+    });
+  }
+
+  /**
+   * Hands the ability host's idle-sleep-prevention actions to the native module. Holding the
+   * screen awake is ArkTS-only, so the host supplies its own closures instead.
+   */
+  private attachRunningLockActions(module: Module): void {
+    if (typeof module.setRunningLockActions !== "function") {
+      console.warn("[NativeAbility] the native module exports no setRunningLockActions port");
+      return;
+    }
+    module.setRunningLockActions!(
+      (reason: string): void => {
+        this.applyKeepScreenOn(true, reason);
+      },
+      (): void => {
+        this.applyKeepScreenOn(false);
+      },
+    );
+  }
+
+  /**
+   * Holds the screen awake while an agent thread is running.
+   *
+   * The OHOS running-lock API cannot serve this: `RunningLockType.BACKGROUND_USER_IDLE` is
+   * reported unsupported on this device (`runningLock.isSupported` returns false), and the other
+   * types are either deprecated or tied to the proximity sensor. `Window.setWindowKeepScreenOn`
+   * is the supported way for an application to hold the screen awake, and it also prevents the
+   * screen lock that would otherwise follow an idle screen-off.
+   */
+  private applyKeepScreenOn(enabled: boolean, reason?: string): void {
+    if (enabled === this.agentKeepsScreenOn) {
+      return;
+    }
+    const currentWindow = this.observedWindow;
+    if (currentWindow === undefined) {
+      console.warn(
+        `[NativeAbility] no window to ${enabled ? "keep the screen on" : "restore the screen timeout"} (reason: ${reason ?? ""})`,
+      );
+      return;
+    }
+    this.agentKeepsScreenOn = enabled;
+    currentWindow.setWindowKeepScreenOn(enabled).catch((error: BusinessError): void => {
+      this.agentKeepsScreenOn = !enabled;
+      console.error(
+        `[NativeAbility] unable to ${enabled ? "keep the screen on" : "restore the screen timeout"}: ${String(error)}`,
+      );
+    });
+  }
+
+  /**
+   * Hands the ability host's notification actions to the native module. Publishing and removing a
+   * notification is ArkTS-only, so the host supplies its own closures instead.
+   */
+  private attachNotificationManagerActions(module: Module): void {
+    if (typeof module.setNotificationManagerActions !== "function") {
+      console.warn("[NativeAbility] the native module exports no setNotificationManagerActions port");
+      return;
+    }
+    module.setNotificationManagerActions!(
+      (request: NativeNotificationRequest): void => {
+        this.publishNotification(request).catch((error: BusinessError): void => {
+          console.error(`[NativeAbility] unable to publish a notification: ${String(error)}`);
+        });
+      },
+      (tag: string): void => {
+        this.cancelNotification(tag);
+      },
+    );
+  }
+
+  private async publishNotification(request: NativeNotificationRequest): Promise<void> {
+    const known = this.notificationIds.get(request.tag);
+    // Reposting under a known tag reuses its id so the system replaces the shown notification
+    // instead of stacking a second one.
+    const id: number = known ?? ++this.lastNotificationId;
+    this.notificationIds.set(request.tag, id);
+    const content: notificationManager.NotificationContent = {
+      notificationContentType: notificationManager.ContentType.NOTIFICATION_CONTENT_BASIC_TEXT,
+      normal: {
+        title: request.title,
+        text: request.body,
+      },
+    };
+    const published: notificationManager.NotificationRequest = {
+      id: id,
+      label: request.tag,
+      content: content,
+      wantAgent: await this.createNotificationWantAgent(request.tag, null),
+    };
+    if (request.actions.length > 0) {
+      const buttons: notificationManager.NotificationActionButton[] = [];
+      for (const action of request.actions) {
+        buttons.push({
+          title: action.title,
+          wantAgent: await this.createNotificationWantAgent(request.tag, action.id),
+        });
+      }
+      published.actionButtons = buttons;
+    }
+    await notificationManager.publish(published);
+  }
+
+  /**
+   * Builds a wantAgent that relaunches this Ability with the activated notification's tag and, for
+   * a button, its id. The Ability reads them back from the launch want.
+   */
+  private async createNotificationWantAgent(
+    tag: string,
+    actionId: string | null,
+  ): Promise<WantAgent> {
+    const context = this.context as common.UIAbilityContext;
+    const capability = context.abilityInfo;
+    const parameters: Record<string, Object> = {};
+    parameters[NOTIFICATION_TAG_PARAMETER] = tag;
+    if (actionId !== null) {
+      parameters[NOTIFICATION_ACTION_ID_PARAMETER] = actionId;
+    }
+    const want: Want = {
+      bundleName: capability.bundleName,
+      abilityName: capability.name,
+      moduleName: capability.moduleName,
+      parameters: parameters,
+    };
+    const info: wantAgent.WantAgentInfo = {
+      wants: [want],
+      actionType: wantAgent.OperationType.START_ABILITY,
+      requestCode: ++this.lastWantAgentRequestCode,
+    };
+    return await wantAgent.getWantAgent(info);
+  }
+
+  /**
+   * Delivers an activation carried by a launch want. Before the first session initialises there is
+   * no native module to hand it to, so it waits for `flushNotificationResponses` instead.
+   */
+  private handleNotificationWant(want: Want): void {
+    const response = NativeAbility.parseNotificationResponse(want);
+    if (response === null) {
+      return;
+    }
+    if (this.moduleRuntimes.length === 0) {
+      this.pendingNotificationResponses.push(response);
+      return;
+    }
+    this.deliverNotificationResponse(response);
+  }
+
+  /** Hands one activation to every native module that exports the response port. */
+  private deliverNotificationResponse(response: NativeNotificationResponse): void {
+    for (const runtime of this.moduleRuntimes) {
+      if (typeof runtime.module.dispatchNotificationResponse !== "function") {
+        continue;
+      }
+      try {
+        runtime.module.dispatchNotificationResponse!(response);
+      } catch (error) {
+        console.error(
+          `[NativeAbility] unable to deliver a notification response to ${runtime.moduleName}: ` +
+            `${String(error)}`,
+        );
+      }
+    }
+  }
+
+  /** Replays activations that arrived before the native modules were ready. */
+  private flushNotificationResponses(): void {
+    const pending = this.pendingNotificationResponses;
+    if (pending.length === 0) {
+      return;
+    }
+    this.pendingNotificationResponses = [];
+    for (const response of pending) {
+      this.deliverNotificationResponse(response);
+    }
+  }
+
+  /** Reads an activation out of a launch want, or null when the want carries none. */
+  private static parseNotificationResponse(want: Want): NativeNotificationResponse | null {
+    const parameters = want.parameters;
+    if (parameters === undefined) {
+      return null;
+    }
+    const tagValue = parameters[NOTIFICATION_TAG_PARAMETER];
+    if (tagValue === undefined) {
+      return null;
+    }
+    const actionValue = parameters[NOTIFICATION_ACTION_ID_PARAMETER];
+    return {
+      tag: tagValue.toString(),
+      actionId: actionValue === undefined ? null : actionValue.toString(),
+    };
+  }
+
+  private cancelNotification(tag: string): void {
+    const id = this.notificationIds.get(tag);
+    if (id === undefined) {
+      return;
+    }
+    this.notificationIds.delete(tag);
+    notificationManager.cancel(id, tag).catch((error: BusinessError): void => {
+      console.error(`[NativeAbility] unable to cancel a notification: ${String(error)}`);
     });
   }
 
@@ -418,6 +706,8 @@ export class NativeAbility extends UIAbility {
         this.attachBridgeSinks(sessionId, loaded.moduleName, loaded.module);
         this.attachWindowActions(loaded.module);
         this.attachAbilityActions(loaded.module);
+        this.attachRunningLockActions(loaded.module);
+        this.attachNotificationManagerActions(loaded.module);
 
         const restoredState = restoredStateMap[loaded.moduleName] ?? fallbackState;
         try {
@@ -430,6 +720,7 @@ export class NativeAbility extends UIAbility {
       }
 
       this.moduleRuntimes = initializedRuntimes;
+      this.flushNotificationResponses();
       const abilityActivations: Promise<void>[] = [];
       for (const runtime of initializedRuntimes) {
         abilityActivations.push(
@@ -473,6 +764,7 @@ export class NativeAbility extends UIAbility {
   }
 
   onCreate(want: Want, _launchParam: AbilityConstant.LaunchParam): void {
+    this.handleNotificationWant(want);
     const isRestore: boolean =
       (want.parameters?.["ohos.ability.params.abilityRecoveryRestart"] as boolean) ?? false;
     const savedState = want.parameters?.[STATE_KEY];
@@ -496,6 +788,11 @@ export class NativeAbility extends UIAbility {
       }
       await this.initializeSession(requestedModules, restoredStateMap, state, generation);
     });
+  }
+
+  onNewWant(want: Want, _launchParam: AbilityConstant.LaunchParam): void {
+    // An already-running Ability receives a notification activation as a new launch want here.
+    this.handleNotificationWant(want);
   }
 
   onWindowStageCreate(windowStage: window.WindowStage): void {

@@ -37,6 +37,10 @@ export interface WindowStageEventCallback {
 export interface AbilityInitContext {
   basePath?: string;
   prefPath?: string;
+  /**
+   * The system's preferred languages as the POSIX `LANGUAGE` list: BCP 47 tags separated by `:`,
+   * most preferred first. Empty when none could be read.
+   */
   preferredLocales?: string;
   /**
    * OHOS `Configuration.colorMode` captured at Ability init: -1 not set, 0 dark, 1 light.
@@ -127,6 +131,52 @@ export interface Module {
    * ArkTS-only, so the host supplies its own closure instead.
    */
   setAbilityActions?: (terminate: () => void) => void;
+  /**
+   * Hands the native module the ability host's running-lock actions. The OHOS running lock is
+   * ArkTS-only, so the host supplies its own closures instead.
+   */
+  setRunningLockActions?: (acquire: (reason: string) => void, release: () => void) => void;
+  /**
+   * Hands the native module the ability host's notification actions. Publishing and removing a
+   * notification is ArkTS-only, so the host supplies its own closures instead.
+   */
+  setNotificationManagerActions?: (
+    publish: (request: NativeNotificationRequest) => void,
+    dismiss: (tag: string) => void,
+  ) => void;
+  /**
+   * Delivers a notification activation back to the native module. Tapping a notification
+   * relaunches the Ability with the notification's tag and, for a button, the button's id.
+   */
+  dispatchNotificationResponse?: (response: NativeNotificationResponse) => void;
+}
+
+/** A notification the native module asks the ability host to post. */
+export interface NativeNotificationRequest {
+  /** Stable identity: reposting the same tag replaces the shown notification. */
+  tag: string;
+  /** The notification's headline. */
+  title: string;
+  /** Additional text shown below the title. */
+  body: string;
+  /** Buttons offered on the notification; empty when the platform shows none. */
+  actions: NativeNotificationAction[];
+}
+
+/** A button offered on a [`NativeNotificationRequest`]. */
+export interface NativeNotificationAction {
+  /** Identifies the action in [`NativeNotificationResponse.actionId`] when pressed. */
+  id: string;
+  /** The button's user-visible label. */
+  title: string;
+}
+
+/** The user's activation of a posted notification. */
+export interface NativeNotificationResponse {
+  /** The tag of the activated notification. */
+  tag: string;
+  /** The pressed button's id, or null when the notification body itself was activated. */
+  actionId: string | null;
 }
 
 export type BridgePluginExecution = "async" | "sync-main-thread";
