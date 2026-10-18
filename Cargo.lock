@@ -603,6 +603,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "openharmony-ability-plugin-play-notification"
+version = "1.0.0-beta.1"
+dependencies = [
+ "log",
+ "napi-derive-ohos",
+ "napi-ohos",
+ "openharmony-ability",
+]
+
+[[package]]
 name = "openharmony-ability-plugin-resource"
 version = "1.0.0-beta.1"
 dependencies = [

@@ -56,6 +56,7 @@ Rust plugin facades (BridgePlugin) + application business code (run_loop)
 | `crates/ability` | Core: lifecycle/`run_loop`, bridge transport (`impl_bridge_napi_type!`, `BridgeNapiType`, `BridgePlugin`, `BridgeRuntime`, `BridgeHost`), ArkUI/xcomponent/ime binding re-exports |
 | `crates/derive` | `#[ability]` entry macro |
 | `crates/plugin-permission` | `ohos.permission` — async permission request |
+| `crates/plugin-play-notification` | `ohos.play-notification` — SoundPool load, playback and stream control |
 | `crates/plugin-app-control` | `ohos.app-control` — sync main-thread terminate |
 | `crates/plugin-window` | `ohos.window` — async avoid-area and multi-window operations |
 | `crates/plugin-webview` | `ohos.webview` — WebView create, controller, custom protocol, JS proxy, callbacks |

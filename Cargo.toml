@@ -10,6 +10,7 @@ openharmony-ability-plugin-cursor = { version = "1.0.0-beta.1", path = "crates/p
 openharmony-ability-plugin-filepicker = { version = "1.0.0-beta.1", path = "crates/plugin-filepicker" }
 openharmony-ability-plugin-openbysys = { version = "1.0.0-beta.1", path = "crates/plugin-openbysys" }
 openharmony-ability-plugin-permission = { version = "1.0.0-beta.1", path = "crates/plugin-permission" }
+openharmony-ability-plugin-play-notification = { version = "1.0.0-beta.1", path = "crates/plugin-play-notification" }
 openharmony-ability-plugin-resource = { version = "1.0.0-beta.1", path = "crates/plugin-resource" }
 openharmony-ability-plugin-url = { version = "1.0.0-beta.1", path = "crates/plugin-url" }
 openharmony-ability-plugin-webview = { version = "1.0.0-beta.1", path = "crates/plugin-webview" }
