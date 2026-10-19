@@ -33,11 +33,10 @@ const ATTACH_RETRY_DELAY_MS = 120;
 // Rust reports the cursor in *window* coordinates: it already folds in the
 // XComponent's offset inside the window (status-bar / safe-area insets - whatever
 // the system reports via `xc.offset`). The one layer it cannot see is the window
-// title bar, which sits ABOVE the XComponent's content area, so we add it here.
-// `winTop` (windowRect.top) covers the status bar, `titleBarHeightPx()` covers the
-// title bar. The trims below are manual correction for any residual error. Units
-// are physical px.
-const TITLE_BAR_HEIGHT_VP = 46;
+// title bar, which sits ABOVE the XComponent's content area. Whether that bar
+// exists is a host decision, so `titleBarHeightPx()` asks the window instead of
+// assuming one: systems with the decoration hidden contribute 0. The trims below
+// are manual correction for any residual error. Units are physical px.
 const CURSOR_TRIM_X_PX = 0;
 const CURSOR_TRIM_Y_PX = 0;
 
@@ -299,17 +298,30 @@ export class ImePlugin extends AsyncPluginBase {
   }
 
   /**
-   * Height of the window title bar in physical px.
+   * Height of the window title bar in physical px, or 0 when the host hides it.
    *
-   * The title bar is drawn above the XComponent's content area, so the cursor
-   * offset Rust reports (relative to the XComponent surface) never includes it.
-   * OpenHarmony has no direct title-bar-height API, so we express it in vp and
-   * convert with the display density - `TITLE_BAR_HEIGHT_VP` is the single knob
-   * to tune if the candidate box is still misaligned vertically.
+   * The title bar, when present, sits above the XComponent's content area, so the
+   * cursor offset Rust reports (relative to the XComponent surface) does not
+   * include it. Apps embedding this plugin differ in whether they keep the system
+   * decoration, so the value is queried from the window rather than hardcoded:
+   * `getWindowDecorVisible` tells whether the bar is shown and
+   * `getWindowDecorHeight` reports the live height in vp. On systems older than
+   * the visibility API we keep the historical assumption that a bar is present.
    */
   private titleBarHeightPx(): number {
     try {
-      return TITLE_BAR_HEIGHT_VP * display.getDefaultDisplaySync().densityPixels;
+      const win = this.hookContext?.getWindow();
+      if (!win) {
+        return 0;
+      }
+      if (typeof win.getWindowDecorVisible === "function" && !win.getWindowDecorVisible()) {
+        return 0;
+      }
+      const heightVp = win.getWindowDecorHeight();
+      if (!(heightVp > 0)) {
+        return 0;
+      }
+      return heightVp * display.getDefaultDisplaySync().densityPixels;
     } catch {
       return 0;
     }
@@ -330,8 +342,7 @@ export class ImePlugin extends AsyncPluginBase {
     }
     // Rust hands us window-relative physical px (it already added the
     // XComponent's offset inside the window, i.e. the status bar / insets). The
-    // title bar sits above the XComponent's content area and is invisible to that
-    // offset, so we add it here on top of the window's screen position.
+    // title bar, if the host still shows one, sits above that content area.
     const titleBar = this.titleBarHeightPx();
     const left = this.lastCursor.x + winLeft + CURSOR_TRIM_X_PX;
     const top = this.lastCursor.y + winTop + titleBar + CURSOR_TRIM_Y_PX;

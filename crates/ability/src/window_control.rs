@@ -6,7 +6,10 @@
 //! closures over, which are kept as threadsafe functions so the warp main thread
 //! can invoke them from a thread other than the UI one.
 
-use std::sync::{Arc, LazyLock, RwLock};
+use std::sync::{
+    Arc, LazyLock, RwLock,
+    atomic::{AtomicBool, Ordering},
+};
 
 use napi_derive_ohos::napi;
 use napi_ohos::{
@@ -19,7 +22,17 @@ use napi_ohos::{
 struct WindowActions {
     minimize: ThreadsafeFunction<(), ()>,
     show_and_focus: ThreadsafeFunction<(), ()>,
+    maximize: ThreadsafeFunction<(), ()>,
+    recover: ThreadsafeFunction<(), ()>,
+    toggle_maximize: ThreadsafeFunction<(), ()>,
 }
+
+/// Whether the main window is currently maximized, as last reported by ArkTS.
+///
+/// ArkTS owns the real window state (`windowStatusChange` reports it), so this
+/// mirror exists only for the synchronous `is_maximized` query the title bar
+/// needs while rendering.
+static MAIN_WINDOW_MAXIMIZED: AtomicBool = AtomicBool::new(false);
 
 static WINDOW_ACTIONS: LazyLock<RwLock<Option<Arc<WindowActions>>>> =
     LazyLock::new(|| RwLock::new(None));
@@ -32,13 +45,27 @@ pub fn set_window_actions(
     _env: &napi_ohos::Env,
     minimize: Function<'_, (), ()>,
     show_and_focus: Function<'_, (), ()>,
+    maximize: Function<'_, (), ()>,
+    recover: Function<'_, (), ()>,
+    toggle_maximize: Function<'_, (), ()>,
 ) -> Result<()> {
-    log::info!("window_control::set_window_actions: registering the ArkTS main-window actions");
     let minimize = minimize
         .build_threadsafe_function()
         .callee_handled::<true>()
         .build()?;
     let show_and_focus = show_and_focus
+        .build_threadsafe_function()
+        .callee_handled::<true>()
+        .build()?;
+    let maximize = maximize
+        .build_threadsafe_function()
+        .callee_handled::<true>()
+        .build()?;
+    let recover = recover
+        .build_threadsafe_function()
+        .callee_handled::<true>()
+        .build()?;
+    let toggle_maximize = toggle_maximize
         .build_threadsafe_function()
         .callee_handled::<true>()
         .build()?;
@@ -51,6 +78,9 @@ pub fn set_window_actions(
     guard.replace(Arc::new(WindowActions {
         minimize,
         show_and_focus,
+        maximize,
+        recover,
+        toggle_maximize,
     }));
     Ok(())
 }
@@ -71,6 +101,44 @@ pub fn show_and_focus_main_window() -> bool {
     })
 }
 
+/// Maximizes the ability's main window.
+///
+/// Returns `false` when ArkTS has not registered its window actions yet.
+pub fn maximize_main_window() -> bool {
+    dispatch_window_action("maximize_main_window", |actions| &actions.maximize)
+}
+
+/// Restores the ability's main window from the maximized state.
+///
+/// Returns `false` when ArkTS has not registered its window actions yet.
+pub fn recover_main_window() -> bool {
+    dispatch_window_action("recover_main_window", |actions| &actions.recover)
+}
+
+/// Maximizes the main window, or restores it when it is already maximized.
+///
+/// ArkTS decides from the live window status, so the result does not depend on
+/// the mirrored state used for the title-bar icon.
+pub fn toggle_main_window_maximize() -> bool {
+    dispatch_window_action("toggle_main_window_maximize", |actions| {
+        &actions.toggle_maximize
+    })
+}
+
+/// Records the main window's maximized state as reported by ArkTS.
+///
+/// The title bar reads this synchronously to pick the maximize or restore icon,
+/// so the value mirrors `windowStatusChange` instead of querying ArkTS per frame.
+#[napi]
+pub fn set_main_window_maximized(maximized: bool) {
+    MAIN_WINDOW_MAXIMIZED.store(maximized, Ordering::Release);
+}
+
+/// Whether the main window is currently maximized, as last reported by ArkTS.
+pub fn is_main_window_maximized() -> bool {
+    MAIN_WINDOW_MAXIMIZED.load(Ordering::Acquire)
+}
+
 fn dispatch_window_action(
     name: &str,
     select: impl Fn(&WindowActions) -> &ThreadsafeFunction<(), ()>,
@@ -86,7 +154,6 @@ fn dispatch_window_action(
         log::warn!("window_control::{name}: ArkTS has not registered the main-window actions");
         return false;
     };
-    log::info!("window_control::{name}: dispatching to ArkTS");
     select(&actions).call(Ok(()), ThreadsafeFunctionCallMode::NonBlocking);
     true
 }

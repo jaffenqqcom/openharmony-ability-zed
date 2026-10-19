@@ -92,6 +92,7 @@ export class NativeAbility extends UIAbility {
   protected homeDirectory: string = "";
   private observedWindowStage?: window.WindowStage;
   private observedWindow?: window.Window;
+  private lastReportedMaximized?: boolean;
 
   private readonly onWindowStageEvent = (event: window.WindowStageEventType): void => {
     if (!this.acceptingLifecycle || this.observedWindowStage === undefined) {
@@ -116,6 +117,32 @@ export class NativeAbility extends UIAbility {
       lifecycle.windowStageEventCallback.onWindowVisibilityChange(visible),
     );
   };
+
+  private readonly onWindowStatusChange = (status: window.WindowStatusType): void => {
+    this.syncMaximized(status === window.WindowStatusType.MAXIMIZE);
+  };
+
+  /**
+   * Mirrors the main window's maximized state into the native side. The title bar needs this
+   * synchronously while rendering to choose between the maximize and restore icons.
+   */
+  private syncMaximized(maximized: boolean): void {
+    // The window is created maximized by the ability metadata and Zed may restore its own
+    // bounds afterwards, which can leave the status event unseen. The live status is
+    // re-read after the content loads, on status changes and after maximize/recover.
+    if (this.moduleRuntimes.length === 0) {
+      return;
+    }
+    if (this.lastReportedMaximized === maximized) {
+      return;
+    }
+    this.lastReportedMaximized = maximized;
+    for (const runtime of this.moduleRuntimes) {
+      try {
+        runtime.module.setMainWindowMaximized?.(maximized);
+      } catch {}
+    }
+  }
 
   protected resolveModuleNames(): string[] {
     const moduleNames = NativeModuleLoader.resolveModuleNames(this.moduleName);
@@ -297,7 +324,112 @@ export class NativeAbility extends UIAbility {
       (): void => {
         this.restoreMainWindow();
       },
+      (): void => {
+        this.maximizeMainWindow();
+      },
+      (): void => {
+        this.recoverMainWindow();
+      },
+      (): void => {
+        this.toggleMaximizeMainWindow();
+      },
     );
+  }
+
+  private toggleMaximizeMainWindow(): void {
+    const win = this.observedWindow;
+    if (win === undefined) {
+      console.warn("[NativeAbility] toggle maximize requested before the main window was observed");
+      return;
+    }
+    let maximized = false;
+    try {
+      maximized = win.getWindowStatus() === window.WindowStatusType.MAXIMIZE;
+    } catch {}
+    if (maximized) {
+      this.recoverMainWindow();
+    } else {
+      this.maximizeMainWindow();
+    }
+  }
+
+  /**
+   * HiCodeer draws its own title bar, so the system decoration has to stay hidden.
+   * Leaving it visible puts a title bar above the app content while floating, and a
+   * maximized window reveals it again whenever the pointer touches the screen edge.
+   */
+  private hideSystemWindowDecor(win: window.Window): void {
+    try {
+      win.setWindowDecorVisible(false);
+    } catch (error) {
+      console.warn(`[NativeAbility] unable to hide the window decoration: ${String(error)}`);
+    }
+    try {
+      win.setWindowTitleButtonVisible(false, false, false);
+    } catch (error) {
+      console.warn(
+        `[NativeAbility] unable to hide the system title buttons: ${String(error)}`,
+      );
+    }
+    this.showSystemBars(win);
+  }
+
+  /**
+   * Recovers from an immersive layout so the system status bar and dock stay visible.
+   * `recover()` restores the window bounds but leaves the immersive flag behind.
+   */
+  private showSystemBars(win: window.Window): void {
+    try {
+      win.setImmersiveModeEnabledState(false);
+    } catch (error) {
+      console.warn(`[NativeAbility] unable to leave immersive mode: ${String(error)}`);
+    }
+  }
+
+  private maximizeMainWindow(): void {
+    const win = this.observedWindow;
+    if (win === undefined) {
+      console.warn("[NativeAbility] maximize requested before the main window was observed");
+      return;
+    }
+    // The default presentation is ENTER_IMMERSIVE, which hides the system status bar
+    // and dock. Ask for the normal maximized layout instead.
+    win.maximize(window.MaximizePresentation.EXIT_IMMERSIVE)
+      .then((): void => {
+        this.syncMaximizedState(win);
+      })
+      .catch((error: BusinessError): void => {
+        console.error(`[NativeAbility] unable to maximize the main window: ${String(error)}`);
+        this.syncMaximizedState(win);
+      });
+  }
+
+  private recoverMainWindow(): void {
+    const win = this.observedWindow;
+    if (win === undefined) {
+      console.warn("[NativeAbility] recover requested before the main window was observed");
+      return;
+    }
+    win.recover()
+      .then((): void => {
+        this.showSystemBars(win);
+        this.syncMaximizedState(win);
+      })
+      .catch((error: BusinessError): void => {
+        console.error(`[NativeAbility] unable to recover the main window: ${String(error)}`);
+        this.syncMaximizedState(win);
+      });
+  }
+
+  /**
+   * Re-reads the live window status after a maximize/recover request. `windowStatusChange`
+   * is the primary signal, but it is not guaranteed to arrive before the next render, so
+   * the request's completion updates the mirror as well to keep the title-bar icon in sync.
+   */
+  private syncMaximizedState(win: window.Window): void {
+    try {
+      this.syncMaximized(win.getWindowStatus() === window.WindowStatusType.MAXIMIZE);
+    } catch {}
   }
 
   private minimizeMainWindow(): void {
@@ -835,12 +967,24 @@ export class NativeAbility extends UIAbility {
         const win = await windowStage.getMainWindow();
         if (win !== null && win !== undefined) {
           win.on("windowVisibilityChange", this.onWindowVisibilityChange);
+          win.on("windowStatusChange", this.onWindowStatusChange);
           this.observedWindow = win;
+          try {
+            this.syncMaximized(win.getWindowStatus() === window.WindowStatusType.MAXIMIZE);
+          } catch {}
         }
       } catch {}
 
       await this.loadWindowStageContent(windowStage);
       this.assertWindowStageActive(generation);
+      // Must run after the content is loaded: before that the window is not yet in a
+      // state where the decor APIs are accepted, and the title bar would stay visible.
+      if (this.observedWindow !== undefined) {
+        this.hideSystemWindowDecor(this.observedWindow);
+        // Zed restores its own window bounds while loading, so re-read the status here
+        // instead of trusting the value seen at window creation.
+        this.syncMaximizedState(this.observedWindow);
+      }
     });
   }
 
@@ -902,6 +1046,9 @@ export class NativeAbility extends UIAbility {
     if (win !== undefined) {
       try {
         win.off("windowVisibilityChange", this.onWindowVisibilityChange);
+      } catch {}
+      try {
+        win.off("windowStatusChange", this.onWindowStatusChange);
       } catch {}
     }
   }

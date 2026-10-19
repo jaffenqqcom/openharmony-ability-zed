@@ -123,9 +123,20 @@ export interface Module {
   onBridgeLifecycle?: (kind: string) => void;
   /**
    * Hands the native module the ability host's main-window actions. The NDK window manager cannot
-   * minimize or restore a window, so the host supplies its own ArkTS closures instead.
+   * minimize, maximize or restore a window, so the host supplies its own ArkTS closures instead.
    */
-  setWindowActions?: (minimize: () => void, showAndFocus: () => void) => void;
+  setWindowActions?: (
+    minimize: () => void,
+    showAndFocus: () => void,
+    maximize: () => void,
+    recover: () => void,
+    toggleMaximize: () => void,
+  ) => void;
+  /**
+   * Reports the main window's maximized state so the native title bar can pick
+   * the maximize or restore icon without querying ArkTS while rendering.
+   */
+  setMainWindowMaximized?: (maximized: boolean) => void;
   /**
    * Hands the native module the ability host's own lifecycle actions. Finishing an ability is
    * ArkTS-only, so the host supplies its own closure instead.
